@@ -23,7 +23,7 @@ ADMIN_ID = 8209617821
 PRICE_USD = 2.5
 PRICE_TEXT = f"Стоимость регистрации одной SIM-карты: **{PRICE_USD}$**"
 
-# Ссылка на счёт в CryptoBot (замени на свою)
+# Ссылка на оплату через CryptoBot — замени на свою реальную
 CRYPTOBOT_INVOICE_LINK = "https://t.me/CryptoBot?start=pay_ВАШ_ИНВОЙС_ИЛИ_ССЫЛКА"
 
 DATA_FILE = Path("bot_data.json")
@@ -266,7 +266,6 @@ async def start_registration(callback: CallbackQuery):
                 "Просто напишите его сюда:"
             )
 
-            # Админу кнопки для управления ожиданием SMS
             kb = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton("🔄 Повторно запросить SMS", callback_data=f"resend_sms_{rid}")],
                 [InlineKeyboardButton("💳 Скинуть счёт CryptoBot", callback_data=f"send_invoice_{rid}")],
@@ -306,7 +305,7 @@ async def resend_sms(callback: CallbackQuery):
             await callback.answer("Повторный запрос отправлен")
             return
 
-    await callback.answer("Заявка не в статусе ожидания SMS", show_alert=True)
+    await callback.answer("Заявка не в статусе ожидания", show_alert=True)
 
 
 @router.callback_query(F.data.startswith("send_invoice_"))
@@ -318,11 +317,11 @@ async def send_invoice(callback: CallbackQuery):
     rid = int(callback.data.split("_")[2])
 
     for req in pending_requests:
-        if req["id"] == rid and req["status"] in ["waiting_sms_code", "sms_received"]:
+        if req["id"] == rid:
             await bot.send_message(
                 req["user_id"],
                 f"Оплатите регистрацию SIM-карты #{rid} ({PRICE_USD}$):\n\n"
-                f"Ссылка на счёт в CryptoBot:\n{CRYPTOBOT_INVOICE_LINK}\n\n"
+                f"Ссылка на оплату в CryptoBot:\n{CRYPTOBOT_INVOICE_LINK}\n\n"
                 "После оплаты пришлите скрин или подтверждение сюда."
             )
 
@@ -330,7 +329,7 @@ async def send_invoice(callback: CallbackQuery):
             await callback.answer("Счёт отправлен")
             return
 
-    await callback.answer("Заявка не в нужном статусе", show_alert=True)
+    await callback.answer("Заявка не найдена", show_alert=True)
 
 
 @router.callback_query(F.data.startswith("rej_"))
@@ -381,7 +380,7 @@ async def finish_registration(callback: CallbackQuery):
                 f"🎉 SIM-карта #{rid} успешно зарегистрирована!\n"
                 f"Оператор: {req['operator']}\n"
                 f"Номер: {req['phone']}\n\n"
-                f"Оплатите {PRICE_USD}$ по ссылке CryptoBot:\n"
+                f"Оплатите {PRICE_USD}$ по ссылке:\n"
                 f"{CRYPTOBOT_INVOICE_LINK}\n\n"
                 "Спасибо!"
             )
@@ -397,14 +396,14 @@ async def finish_registration(callback: CallbackQuery):
     await callback.answer("Заявка не готова к завершению", show_alert=True)
 
 
-# ================= ОБЩИЙ ХЕНДЛЕР СООБЩЕНИЙ =================
+# ================= САМЫЙ ПОСЛЕДНИЙ ХЕНДЛЕР — ЛОВИТ ВСЁ =================
 @router.message()
-async def handle_dialog_messages(message: Message):
+async def catch_all_dialog(message: Message):
     if message.chat.id == ADMIN_ID:
         return
 
     for req in pending_requests:
-        if req["user_id"] == message.chat.id and req["dialog_active"]:
+        if req.get("user_id") == message.chat.id and req.get("dialog_active", False):
             if req["status"] == "waiting_sms_code":
                 code = message.text.strip()
                 if code.isdigit() and 4 <= len(code) <= 6:
@@ -412,12 +411,12 @@ async def handle_dialog_messages(message: Message):
                     req["status"] = "sms_received"
                     await save_data()
 
-                    await message.answer("Код принят. Администратор проверяет...")
+                    await message.reply("✅ Код принят. Администратор проверяет...")
 
                     kb = InlineKeyboardMarkup(inline_keyboard=[
                         [InlineKeyboardButton("🏁 Завершить регистрацию", callback_data=f"finish_{req['id']}")],
                         [InlineKeyboardButton("🔄 Повтор SMS", callback_data=f"resend_sms_{req['id']}")],
-                        [InlineKeyboardButton("💳 Скинуть счёт", callback_data=f"send_invoice_{req['id']}")],
+                        [InlineKeyboardButton("💳 Скинуть счёт CryptoBot", callback_data=f"send_invoice_{req['id']}")],
                         [InlineKeyboardButton("❌ Отклонить", callback_data=f"rej_{req['id']}")]
                     ])
 
@@ -425,20 +424,24 @@ async def handle_dialog_messages(message: Message):
                         ADMIN_ID,
                         f"Заявка #{req['id']} — клиент ввёл код SMS: **{code}**\n"
                         f"Номер: {req['phone']}\n"
-                        f"Оператор: {req['operator']}\n\n"
-                        "Что дальше?",
+                        f"Оператор: {req['operator']}\n"
+                        f"Username: @{req.get('username', 'нет')}",
                         reply_markup=kb,
                         parse_mode="Markdown"
                     )
                 else:
-                    await message.answer("Код должен состоять из 4–6 цифр. Попробуйте ещё раз:")
+                    await message.reply("Код должен быть из 4–6 цифр. Попробуйте ещё раз:")
                 return
 
-            # Если статус другой — пересылаем админу
+            # Если диалог активен, но статус другой — форвардим админу
             await bot.forward_message(ADMIN_ID, message.chat.id, message.message_id)
             return
 
-# ================= АДМИН-ПАНЕЛЬ (без изменений) =================
+    # Если ничего не подошло
+    await message.reply("Используйте кнопки меню ↓", reply_markup=get_main_kb())
+
+
+# ================= АДМИН-ПАНЕЛЬ =================
 @router.message(Command("admin"))
 async def admin_panel(message: Message):
     if message.chat.id != ADMIN_ID:
@@ -460,7 +463,63 @@ async def admin_panel(message: Message):
         reply_markup=kb
     )
 
-# ... (остальные части: generate_requests_list, list_requests, search, broadcast — оставь как было ранее)
+# ================= СПИСОК ЗАЯВОК =================
+async def generate_requests_list(page: int = 1, per_page: int = 8, status: str | None = None, search: str | None = None, field: str = "phone") -> tuple[str, InlineKeyboardMarkup | None]:
+    filtered = [
+        r for r in pending_requests
+        if (status is None or r["status"] == status)
+        and (search is None or search.lower() in str(r.get(field, "")).lower())
+    ]
+
+    total = len(filtered)
+    start = (page - 1) * per_page
+    items = filtered[start : start + per_page]
+
+    if not items:
+        return "Нет подходящих заявок.", None
+
+    lines = [f"Заявки | стр {page}/{max(1, (total + per_page - 1)//per_page)} | всего {total}\n"]
+    for r in items:
+        emoji = "⏳" if r["status"] == "pending" else "✅" if r["status"] == "registered" else "❌"
+        lines.append(f"{emoji} #{r['id']} | {r['operator']} | {r['phone']}")
+        lines.append(f"   @{r['username']} | {r['first_name']} | {r['user_id']}\n")
+
+    text = "".join(lines)
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[])
+
+    for r in items:
+        if r["status"] == "pending":
+            kb.inline_keyboard.append([
+                InlineKeyboardButton(text=f"✅ #{r['id']}", callback_data=f"reg_{r['id']}"),
+                InlineKeyboardButton(text=f"❌ #{r['id']}", callback_data=f"rej_{r['id']}")
+            ])
+
+    if page > 1:
+        kb.inline_keyboard.append([InlineKeyboardButton(text="← Назад", callback_data=f"list_{status or 'all'}_{page-1}")])
+
+    if start + per_page < total:
+        kb.inline_keyboard.append([InlineKeyboardButton(text="Вперёд →", callback_data=f"list_{status or 'all'}_{page+1}")])
+
+    kb.inline_keyboard.append([InlineKeyboardButton(text="↩ Админ меню", callback_data="admin_menu")])
+
+    return text, kb
+
+@router.callback_query(F.data.startswith("list_"))
+async def list_requests(callback: CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("Доступ запрещён")
+        return
+
+    parts = callback.data.split("_")
+    filter_type = parts[1] if len(parts) > 2 else "all"
+    page = int(parts[-1]) if parts[-1].isdigit() else 1
+
+    status = None if filter_type == "all" else "pending" if filter_type == "pending" else None
+
+    text, kb = await generate_requests_list(page=page, status=status)
+    await callback.message.edit_text(text, reply_markup=kb)
+    await callback.answer()
 
 # ================= ЗАПУСК =================
 async def main():
