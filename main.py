@@ -17,7 +17,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiocryptopay import AioCryptoPay
 
 # ================= НАСТРОЙКИ =================
-TOKEN = "8623489996:AAE5rfYaS4JbAGrso_veeFALIsLagXx74s8"
+TOKEN = "8644586406:AAE77FSG_ddArp7DnhkpMu8HtQy5SaqItgE"
 ADMIN_ID = 8209617821
 CRYPTO_TOKEN = "553031:AAYPKOXkV5DTYcbIKdQYUlhLFwrI9Ah0YYG"
 
