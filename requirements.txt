@@ -1,1 +1,2 @@
+aiocryptopay
 aiogram>=3.13.0
