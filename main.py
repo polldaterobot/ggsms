@@ -225,5 +225,3 @@ async def start_reg(message: Message, state: FSMContext):
     await state.clear()
     await message.answer("📊 Выбери оператора:", reply_markup=get_operators_kb())
     await state.set_state(RegForm.operator)
-
-@
