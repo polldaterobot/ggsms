@@ -19,22 +19,20 @@ from aiocryptopay import AioCryptoPay
 # ================= НАСТРОЙКИ =================
 TOKEN = "8644586406:AAE77FSG_ddArp7DnhkpMu8HtQy5SaqItgE"
 ADMIN_ID = 8209617821
+# ВНИМАНИЕ: Проверь, чтобы здесь не было лишних пробелов в начале или конце!
 CRYPTO_TOKEN = "553031:AAYPKOXkV5DTYcbIKdQYUlhLFwrI9Ah0YYG"
-
-# ПЕРЕКЛЮЧАТЕЛЬ: True - бесплатно, False - через оплату
-FREE_MODE = False
-
-PRICE_USD = 2.58 
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# Инициализация без Const
-crypto = AioCryptoPay(token=CRYPTO_TOKEN)
+# Инициализация БЕЗ дополнительных аргументов, только токен
+# Если ошибка повторится, попробуй создать НОВЫЙ токен в @CryptoBot
+crypto = AioCryptoPay(token=CRYPTO_TOKEN.strip()) 
 
 router = Router()
 dp.include_router(router)
+)
 
 class RegForm(StatesGroup):
     operator = State()
