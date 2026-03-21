@@ -20,7 +20,7 @@ ADMIN_ID = 8209617821
 CRYPTO_TOKEN = "552977:AABwZSaXYMIl5cJIpPZgfGgE5tek7vHNaX4"      # CryptoPay токен
 
 # ПЕРЕКЛЮЧАТЕЛЬ РЕЖИМА
-FREE_MODE = False          # True = бесплатно (тест), False = с оплатой
+FREE_MODE = True          # True = бесплатно (тест), False = с оплатой
 PRICE_USD = 2.58
 
 # Логирование
