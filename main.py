@@ -14,25 +14,25 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
 # ИСПРАВЛЕННЫЙ ИМПОРТ
-from aiocryptopay import AioCryptoPay
+from aiocryptopay import AioCryptoPay, Const
 
 # ================= НАСТРОЙКИ =================
 TOKEN = "8623489996:AAE5rfYaS4JbAGrso_veeFALIsLagXx74s8"
 ADMIN_ID = 8209617821
 CRYPTO_TOKEN = "553031:AAYPKOXkV5DTYcbIKdQYUlhLFwrI9Ah0YYG"
 
-# 2.58$ (минус комиссия 3% = тебе придет ровно 2.5$)
 PRICE_USD = 2.58 
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# ИСПРАВЛЕННОЕ СОЗДАНИЕ ОБЪЕКТА
-crypto = AioCryptoPay(token=CRYPTO_TOKEN, testnet=False)
+# ИСПРАВЛЕННОЕ СОЗДАНИЕ ОБЪЕКТА (удален testnet, добавлен network)
+crypto = AioCryptoPay(token=CRYPTO_TOKEN, network=Const.MAINNET)
 
 router = Router()
 dp.include_router(router)
+
 
 class RegForm(StatesGroup):
     operator = State()
