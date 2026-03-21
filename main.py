@@ -32,7 +32,6 @@ crypto = AioCryptoPay(token=CRYPTO_TOKEN.strip())
 
 router = Router()
 dp.include_router(router)
-)
 
 class RegForm(StatesGroup):
     operator = State()
