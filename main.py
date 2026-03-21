@@ -17,13 +17,13 @@ from aiocryptopay import AioCryptoPay, Networks
 # ================= НАСТРОЙКИ =================
 TOKEN = "8644586406:AAE77FSG_ddArp7DnhkpMu8HtQy5SaqItgE"          # Telegram Bot токен
 ADMIN_ID = 8209617821
-CRYPTO_TOKEN = "552977:AABwZSaXYMIl5cJIpPZgfGgE5tek7vHNaX4"      # ← новый токен CryptoPay
+CRYPTO_TOKEN = "552977:AABwZSaXYMIl5cJIpPZgfGgE5tek7vHNaX4"      # CryptoPay токен
 
 # ПЕРЕКЛЮЧАТЕЛЬ РЕЖИМА
 FREE_MODE = False          # True = бесплатно (тест), False = с оплатой
 PRICE_USD = 2.58
 
-# Логирование (чтобы видеть ошибки)
+# Логирование
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s",
@@ -33,10 +33,10 @@ logging.basicConfig(
 bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# CryptoPay клиент — явно указываем MAIN_NET (или TEST_NET при тестировании)
+# CryptoPay клиент
 crypto = AioCryptoPay(
     token=CRYPTO_TOKEN.strip(),
-    network=Networks.MAIN_NET   # поменяй на Networks.TEST_NET если нужно тестировать
+    network=Networks.MAIN_NET   # или Networks.TEST_NET при тестировании
 )
 
 router = Router()
@@ -129,6 +129,10 @@ async def process_phone(message: Message, state: FSMContext):
             description=f"Регистрация номера {phone} ({data['operator']})"
         )
 
+        # Проверка наличия ссылки (на всякий случай)
+        if not hasattr(invoice, 'bot_invoice_url') or not invoice.bot_invoice_url:
+            raise AttributeError("Нет bot_invoice_url в объекте Invoice")
+
         rid = invoice.invoice_id
         pending_requests.append({
             "id": rid,
@@ -140,7 +144,7 @@ async def process_phone(message: Message, state: FSMContext):
         })
 
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="💳 Оплатить USDT", url=invoice.pay_url)],
+            [InlineKeyboardButton(text="💳 Оплатить USDT", url=invoice.bot_invoice_url)],
             [InlineKeyboardButton(text="🔄 Проверить оплату", callback_data=f"check_{rid}")]
         ])
 
@@ -150,6 +154,9 @@ async def process_phone(message: Message, state: FSMContext):
         )
         await state.clear()
 
+    except AttributeError as ae:
+        logging.error(f"Ошибка атрибута Invoice: {ae}")
+        await message.answer("⚠️ Ошибка формата ответа от CryptoPay (нет ссылки на оплату)")
     except Exception as e:
         logging.exception("Ошибка при создании инвойса CryptoPay")
         await message.answer(f"⚠️ Ошибка платежной системы\n{str(e)[:120]}")
